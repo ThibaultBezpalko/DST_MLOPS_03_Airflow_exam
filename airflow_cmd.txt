@@ -1,0 +1,9 @@
+
+# To start the airflow containers
+docker-compose up -d
+
+# To check the health of airflow containers
+docker container ls
+
+# To stop and remove airflow containers
+docker-compose down
