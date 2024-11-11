@@ -12,7 +12,7 @@ def compute_model_score(model, X, y):
         model,
         X,
         y,
-        cv=3,
+        cv=2,
         scoring='neg_mean_squared_error')
 
     model_score = cross_validation.mean()
@@ -20,7 +20,7 @@ def compute_model_score(model, X, y):
     return model_score
 
 
-def train_and_save_model(model, X, y, path_to_model='./app/model.pkl'):
+def train_and_save_model(model, X, y, path_to_model='./model.pkl'):
     # training the model
     model.fit(X, y)
     # saving model
@@ -28,7 +28,7 @@ def train_and_save_model(model, X, y, path_to_model='./app/model.pkl'):
     dump(model, path_to_model)
 
 
-def prepare_data(path_to_data='/app/clean_data/fulldata.csv'):
+def prepare_data(path_to_data='/clean_data/fulldata.csv'):
     # reading data
     df = pd.read_csv(path_to_data)
     # ordering data according to city and date
@@ -37,15 +37,14 @@ def prepare_data(path_to_data='/app/clean_data/fulldata.csv'):
     dfs = []
 
     for c in df['city'].unique():
-        df_temp = df[df['city'] == c]
+        df_temp = df[df['city'] == c].copy()
 
         # creating target
-        df_temp.loc[:, 'target'] = df_temp['temperature'].shift(1)
+        df_temp.loc[:, 'target'] = df_temp.loc[:, 'temperature'].shift(1)
 
         # creating features
-        for i in range(1, 10):
-            df_temp.loc[:, 'temp_m-{}'.format(i)
-                        ] = df_temp['temperature'].shift(-i)
+        for i in range(1, 5):
+            df_temp.loc[:, 'temp_m-{}'.format(i)] = df_temp.loc[:, 'temperature'].shift(-i)
 
         # deleting null values
         df_temp = df_temp.dropna()
@@ -72,33 +71,34 @@ def prepare_data(path_to_data='/app/clean_data/fulldata.csv'):
 
 
 if __name__ == '__main__':
-
+    # Combining json files to prepare the data
     X, y = prepare_data('./clean_data/fulldata.csv')
 
-    score_lr = compute_model_score(LinearRegression(), X, y)
-    score_dt = compute_model_score(DecisionTreeRegressor(), X, y)
-    score_rf = compute_model_score(RandomForestRegressor(), X, y)
+    # Instantiate the models
+    models = {
+        'Linear Regression': LinearRegression(), 
+        'Decision Tree Regression': DecisionTreeRegressor(), 
+        'Random Forest Regression': RandomForestRegressor()
+    }
 
-    # using neg_mean_square_error
-    if score_lr < score_dt:
-        if score_lr < score_rf: 
-            train_and_save_model(
-                LinearRegression(),
+    # Instantiate the scores dict
+    neg_mse_scores = {}
+
+    # Cross-validation of each model
+    for key, model in models.items():
+        scores = compute_model_score(model, X, y)
+        neg_mse_scores[key] = scores.mean()
+
+    # Summary of results
+    for model_name, score in neg_mse_scores.items():
+        print(f"{model_name}: Mean Negative MSE = {score}")
+
+    # Selection of best model with the highest neg_mse (closest to 0)
+    best_model = max(neg_mse_scores, key=neg_mse_scores.get)
+    print(f"The best model is {best_model} with a score of {neg_mse_scores[best_model]}")
+    train_and_save_model(
+                models[best_model],
                 X,
                 y,
-                '/app/clean_data/best_model.pickle'
+                'clean_data/best_model.pickle'
             )
-        else:
-            train_and_save_model(
-                RandomForestRegressor(),
-                X,
-                y,
-                '/app/clean_data/best_model.pickle'
-            )            
-    else:
-        train_and_save_model(
-            DecisionTreeRegressor(),
-            X,
-            y,
-            '/app/clean_data/best_model.pickle'
-        )

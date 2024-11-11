@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pandas as pd
 
-def transform_data_into_csv(n_files=None, filename='data.csv'):
+def transform_data_into_csv(n_files=None, filename='fulldata.csv'):
     parent_folder = './raw_files'
     files = sorted(os.listdir(parent_folder), reverse=True)
     print(files)
@@ -28,10 +28,10 @@ def transform_data_into_csv(n_files=None, filename='data.csv'):
 
     df = pd.DataFrame(dfs)
 
-    print('\n', df.head(10))
+    print('\n', df.head(100))
 
     df.to_csv(os.path.join('./clean_data', filename), index=False)
 
 if __name__ == '__main__':
-    transform_data_into_csv(3, 'data.csv')
-    transform_data_into_csv(5, 'fulldata.csv')
+    transform_data_into_csv(20, 'data.csv')
+    transform_data_into_csv()

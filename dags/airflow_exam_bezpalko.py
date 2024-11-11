@@ -40,23 +40,19 @@ def owm_request_get():
             params={"q": city, "appid": API_key}
         )
         if r.status_code == 200:
-            r.append(r.json())  # Append each JSON response to the list
+            data.append(r.json())  # Append each JSON response to the list
         else:
             print(f"Error with status code: {r.status_code}")
-
-        # Write the combined JSON array to a file
-        with open('combined_data.json', 'w') as file:
-            json.dump(data, file, indent=4)  # Writes the list as a JSON array
 
         print("Data successfully written to combined_data.json")        
         dt1 = datetime.datetime.now()
         # storing the current time in the variable
         print(f"Call time : {dt1 - dt0} s")
 
-        # impression dans un fichier
-        with open(f'/app/raw_files/{filename}', 'a') as file:
-            json.dump(data, file)
-            file.write('\n')
+    # Write the combined JSON array to a file
+    with open(f'/app/raw_files/{filename}', 'a') as file:
+        json.dump(data, file, indent=4)  # Writes the list as a JSON array
+        file.write('\n')
 
 
 
