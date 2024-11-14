@@ -6,15 +6,16 @@ import pandas as pd
 def transform_data_into_csv(n_files=None, filename='fulldata.csv'):
     parent_folder = './raw_files'
     files = sorted(os.listdir(parent_folder), reverse=True)
-    print(files)
     if n_files:
         files = files[:n_files]
-        print(files)
+    
+    print(files)
 
     dfs = []
 
     for f in files:
         with open(os.path.join(parent_folder, f), 'r') as file:
+            print(file)
             data_temp = json.load(file)
         for data_city in data_temp:
             dfs.append(
@@ -33,5 +34,5 @@ def transform_data_into_csv(n_files=None, filename='fulldata.csv'):
     df.to_csv(os.path.join('./clean_data', filename), index=False)
 
 if __name__ == '__main__':
-    transform_data_into_csv(20, 'data.csv')
-    transform_data_into_csv()
+    transform_data_into_csv(4, 'data.csv')
+    #transform_data_into_csv()
