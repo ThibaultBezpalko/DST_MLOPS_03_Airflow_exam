@@ -249,7 +249,16 @@ def choose_model(models_dict, task_instance):
 with DAG(
     dag_id='airflow_exam_dag',
     tags=['exam', 'datascientest'],
-    doc_md='''Documentation dag''',
+    doc_md='''
+    DataScientest Sep 2024 - MLOPS
+    Examen Airflow Thibault BEZPALKO
+
+    This DAG is composed of:
+    - minutely API call to the OpenWeatherMap to get temperature and pressure variables for Paris, London, Washington
+    - prepare the datasets for dashboard feeding and for model training
+    - train 3 models
+    - choose and save the best model
+    ''',
     schedule_interval=datetime.timedelta(seconds=60),
     start_date=days_ago(0),
     catchup=False,
