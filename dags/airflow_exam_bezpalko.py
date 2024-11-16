@@ -1,27 +1,30 @@
 from airflow import DAG
 from airflow.utils.dates import days_ago
-from airflow.sensors.filesystem import FileSensor
+from airflow.sensors.base import BaseSensorOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator, get_current_context
 from airflow.decorators import dag, task
 from airflow.utils.task_group import TaskGroup
 from airflow.models import Variable
 from airflow.models.xcom import LazyXComAccess
-import random
+from airflow.utils.decorators import apply_defaults
+
+# API libs
 import requests
-import sys
 import json
+
+# Global libs
+import sys
 import datetime
 from pathlib import Path
 import os
-import datetime
+import glob
 
-# For the data preparation
+# Data preparation libs
 import numpy as np
 import pandas as pd
 
-# For the model
-import pandas as pd
+# Model libs
 from sklearn.model_selection import cross_val_score
 from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeRegressor
@@ -37,6 +40,9 @@ cities = ['paris', 'london', 'washington']
 Variable.set(key="cities", value=cities)
 my_variable_value = Variable.get(key="cities")
 
+# Number of files for dashboard dataset
+dashboard_files_number = 20
+
 # Instantiate the models
 models_dict = {
     'Linear Regression': LinearRegression(), 
@@ -45,7 +51,7 @@ models_dict = {
 }
 
 
-@task(task_id="Calling_OpenWeatherMap_API")
+@task(task_id="Calling_OpenWeatherMap_API", task_concurrency=1)
 def owm_request_get():
     expected_code = 200
     
@@ -54,10 +60,18 @@ def owm_request_get():
     dt = dt0.strftime("%Y-%m-%d %H:%M")
     filename = dt + '.json'
 
+    # Check if the file exists and read the previous data if available
+    try:
+        with open(f'/app/raw_files/{filename}', 'r') as file:
+            print(f"The file '{filename}' already exists")
+    except FileNotFoundError:
+        print(f"The file '{filename}' doesn't exist")
+
     data = []
 
     for city in cities:
-        print(f'https://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_key}')
+        dt_i = datetime.datetime.now()
+        print(f'Call to https://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_key} at {dt_i}')
         r = requests.get(
             url='https://api.openweathermap.org/data/2.5/weather', 
             params={"q": city, "appid": API_key}
@@ -66,27 +80,31 @@ def owm_request_get():
             data.append(r.json())  # Append each JSON response to the list
         else:
             print(f"Error with status code: {r.status_code}")
-
-        print("Data successfully written to combined_data.json")        
-        dt1 = datetime.datetime.now()
-        # storing the current time in the variable
-        print(f"Call time : {dt1 - dt0} s")
+       
+        dt_f = datetime.datetime.now()
+        # Current duration of API call
+        print(f"Call time : {dt_f - dt_i} s")
 
     # Write the combined JSON array to a file
-    with open(f'/app/raw_files/{filename}', 'a') as file:
+    with open(f'/app/raw_files/{filename}', 'w') as file:
         json.dump(data, file, indent=4)  # Writes the list as a JSON array
-        # file.write('\n')
+        print(f"Data successfully written to {filename}") 
 
 
+@task(task_id="Check_Number_JSON")
+def check_files(directory, pattern, required_count):
+    files = glob.glob(os.path.join(directory, pattern))
+    if len(files) < required_count:
+        raise ValueError(f"Not enough files found! Expected at least {required_count}, found {len(files)}")
+    print(f"Found {len(files)} files matching the pattern '{pattern}'.")
 
-@task
+
 def transform_data_into_csv(n_files=None, filename='fulldata.csv'):
     parent_folder = '/app/raw_files'
     files = sorted(os.listdir(parent_folder), reverse=True)
-    print(files)
     if n_files:
         files = files[:n_files]
-        print(files)
+    print(files)
 
     dfs = []
 
@@ -226,10 +244,6 @@ def choose_model(models_dict, task_instance):
                 '/app/clean_data/best_model.pickle'
             )
 
-@task
-def dummy_task(dependency):
-    print("This is a dummy task!")
-
 
 # Define the DAG using the traditional method
 with DAG(
@@ -238,22 +252,38 @@ with DAG(
     doc_md='''Documentation dag''',
     schedule_interval=datetime.timedelta(seconds=60),
     start_date=days_ago(0),
-    catchup=False
+    catchup=False,
+    max_active_runs=1,  # Ensure only one DAG run at a time
 ) as dag:
 
-    # "Calling OpenWeatherMap API"
-    task_01 = owm_request_get()
+    # Calling OpenWeatherMap API
+    t_request = owm_request_get()
+
+    # Wait for enough files before next process
+    t_wait = check_files(
+        directory="/app/raw_files/",
+        pattern="*.json",
+        required_count=dashboard_files_number,
+    )
     
-    # "Preparing dataset for dashboard"
-    # task_02 = dummy_task(dependency=task_01)
-    task_02 = transform_data_into_csv(n_files=20, filename='data.csv')
+    with TaskGroup("Prepare_Datasets", tooltip="Preparing datasets tasks group") as t_prepare_data:
+        # Preparing dataset for dashboard
+        t_dataset_dashboard = PythonOperator(
+            task_id='Preparing_Dataset_Dashboard',
+            dag=dag,
+            python_callable=transform_data_into_csv,
+            op_kwargs={'n_files':dashboard_files_number, 'filename':'data.csv'},
+        )
 
-    # "Preparing dataset for training model"
-    # task_03 = dummy_task(dependency=task_01)
-    task_03 = transform_data_into_csv()
+        # Preparing dataset for training model
+        t_dataset_model = PythonOperator(
+            task_id='Preparing_Dataset_Model',
+            dag=dag,
+            python_callable=transform_data_into_csv,
+        )
 
-    # Define Task Group
-    with TaskGroup("Evaluate_Models", tooltip="This is Task Group 1") as group:
+    # Training tasks group
+    with TaskGroup("Evaluate_Models", tooltip="Training models tasks group") as t_train_models:
         lr = PythonOperator(
             task_id='Linear_Regression',
             dag=dag,
@@ -275,33 +305,11 @@ with DAG(
             op_kwargs={'models_dict': models_dict, 'model_name': 'Random Forest Regression'},
         )
 
-    task_04 = choose_model(models_dict=models_dict)
+    t_choose_model = choose_model(models_dict=models_dict)
 
-    task_01 >> [task_02, task_03]
-    task_03 >> group
-    group >> task_04
-
-
-
-'''
-with DAG(
-    dag_id='sensor_dag',
-    schedule_interval=None,
-    tags=['tutorial', 'datascientest'],
-    start_date=days_ago(0)
-) as dag:
-
-    my_sensor = FileSensor(
-        task_id="check_file",
-        fs_conn_id="my_filesystem_connection",
-        filepath="/tmp/my_file.txt",
-        poke_interval=30,
-        timeout=5 * 30,
-        mode='reschedule'
-    )
-
-    my_task = BashOperator(
-        task_id="print_file_content",
-        bash_command="cat /tmp/my_file.txt",
-    )
-'''
+    # Dependencies
+    t_request >> t_wait
+    t_wait >> t_prepare_data
+    # t_wait >> [t_dataset_dashboard, t_dataset_model]
+    t_dataset_model >> t_train_models
+    t_train_models >> t_choose_model
