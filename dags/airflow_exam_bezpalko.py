@@ -39,7 +39,7 @@ API_key = 'dd48455b8b6454dfa07d39a4f69de373'
 cities = ['paris', 'london', 'washington']
 Variable.set(key="cities", value=json.dumps(cities))
 
-# Number of files for dashboard dataset
+# Minimal number of files for dashboard dataset
 dashboard_files_number = 20
 
 # Instantiate the models
@@ -49,56 +49,65 @@ models_dict = {
     'Random Forest Regression': RandomForestRegressor()
 }
 
+# Paths
+Variable.set(key="model_path", value='/app/model/best_model.pickle')
 
+
+# Task 01: get data from OpenWeatherMap API for each city minutely
 @task(task_id="Calling_OpenWeatherMap_API", task_concurrency=1)
-def owm_request_get():
-    expected_code = 200
-    
-    # json file:
+def owm_request_get():    
+    # json filename:
     dt0 = datetime.datetime.now()
     dt = dt0.strftime("%Y-%m-%d %H:%M")
     filename = dt + '.json'
 
-    # Check if the file exists and read the previous data if available
+    # Check if the file exists
     try:
         with open(f'/app/raw_files/{filename}', 'r') as file:
             print(f"The file '{filename}' already exists")
+        # To avoid double JSON array object when starting the DAG
+        pass
+    # If not, collect data
     except FileNotFoundError:
-        print(f"The file '{filename}' doesn't exist")
+        print(f"The file '{filename}' doesn't exist. Collecting data")
 
-    data = []
+        # Loading list of cities from Airflow variable
+        airflow_cities_list = Variable.get(key="cities", deserialize_json=True)
+        # airflow_cities_list = json.loads(airflow_cities)
+        print(f"List of cities to get measures: {airflow_cities_list}")
 
-    # Loading list of cities from Airflow variable
-    airflow_cities_list = Variable.get(key="cities", deserialize_json=True)
-    # airflow_cities_list = json.loads(airflow_cities)
-    print(f"List of cities to get measures: {airflow_cities_list}")
+        # Instantiate the data list collecting data from API
+        data = []
 
-    for city in airflow_cities_list:
-        dt_i = datetime.datetime.now()
-        print(f'Call to https://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_key} at {dt_i}')
-        r = requests.get(
-            url='https://api.openweathermap.org/data/2.5/weather', 
-            params={"q": city, "appid": API_key}
-        )
-        if r.status_code == 200:
-            # Append each JSON response to the data object
-            data.append(r.json())  
+        # Collecting data for each city
+        for city in airflow_cities_list:
+            dt_i = datetime.datetime.now()
+            print(f'Call to https://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_key} at {dt_i}')
+            r = requests.get(
+                url='https://api.openweathermap.org/data/2.5/weather', 
+                params={"q": city, "appid": API_key}
+            )
+            if r.status_code == 200:
+                # Append each JSON response to the data object
+                data.append(r.json())  
+            else:
+                print(f"Error with status code: {r.status_code}")
+        
+            dt_f = datetime.datetime.now()
+            # Current duration of API call
+            print(f"Call time : {dt_f - dt_i} s")
+
+        # Write the combined JSON array to a file
+        # If some correct data is present in the data object, then create a file
+        if data != []:
+            with open(f'/app/raw_files/{filename}', 'a') as file:
+                json.dump(data, file, indent=4)  # Writes the list as a JSON array
+                print(f"Data successfully written to {filename}!") 
         else:
-            print(f"Error with status code: {r.status_code}")
-       
-        dt_f = datetime.datetime.now()
-        # Current duration of API call
-        print(f"Call time : {dt_f - dt_i} s")
-
-    # Write the combined JSON array to a file
-    if data != []:
-        with open(f'/app/raw_files/{filename}', 'a') as file:
-            json.dump(data, file, indent=4)  # Writes the list as a JSON array
-            print(f"Data successfully written to {filename}!") 
-    else:
-        print("No data to create a file!")
+            print("No data to create a file!")
 
 
+# Checking the number of json files before starting the rest of process
 @task(task_id="Check_Number_JSON")
 def check_files(directory, pattern, required_count):
     files = glob.glob(os.path.join(directory, pattern))
@@ -107,15 +116,20 @@ def check_files(directory, pattern, required_count):
     print(f"Found {len(files)} files matching the pattern '{pattern}'.")
 
 
+# Task 02 and 03 : prepare the csv files used for dashboard and model training
 def transform_data_into_csv(n_files=None, filename='fulldata.csv'):
     parent_folder = '/app/raw_files'
+
+    # Sort the files chronogically
     files = sorted(os.listdir(parent_folder), reverse=True)
     if n_files:
         files = files[:n_files]
     print(files)
 
+    # Instantiate the list of data
     dfs = []
 
+    # Retrieve the targeted meteo data
     for f in files:
         with open(os.path.join(parent_folder, f), 'r') as file:
             data_temp = json.load(file)
@@ -129,13 +143,16 @@ def transform_data_into_csv(n_files=None, filename='fulldata.csv'):
                     }
                 )
 
+    # Conversion into a DataFrame before creating the csv file
     df = pd.DataFrame(dfs)
 
     print('\n', df.head(100))
 
+    # Create a csv file fill with data
     df.to_csv(os.path.join('/app/clean_data', filename), index=False)
 
 
+# Task 04: cross-validation for the selected model fed with data
 def compute_model_score(model, X, y):
     # computing cross val
     cross_validation = cross_val_score(
@@ -145,24 +162,13 @@ def compute_model_score(model, X, y):
         cv=2,
         scoring='neg_mean_squared_error')
 
+    # Mean score for the cross validated runs
     model_score = cross_validation.mean()
-
 
     return model_score
 
 
-def train_and_save_model(model, path_to_model='/app/clean_data/best_model.pickle'):
-    # Combining json files to prepare the data
-    X, y = prepare_data('/app/clean_data/fulldata.csv')
-
-    # training the model
-    model.fit(X, y)
-
-    # saving model
-    print(str(model), 'saved at ', path_to_model)
-    dump(model, path_to_model)
-
-
+# Prepare features and target before fitting model
 def prepare_data(path_to_data='/app/clean_data/fulldata.csv'):
     # reading data
     df = pd.read_csv(path_to_data)
@@ -179,7 +185,7 @@ def prepare_data(path_to_data='/app/clean_data/fulldata.csv'):
 
         # creating features
         for i in range(1, 5):
-            df_temp.loc[:, 'temp_m-{}'.format(i)] = df_temp.loc[:, 'temperature'].shift(-i)
+            df_temp.loc[:, f'temp_m-{i}'] = df_temp.loc[:, 'temperature'].shift(-i)
 
         # deleting null values
         df_temp = df_temp.dropna()
@@ -198,13 +204,14 @@ def prepare_data(path_to_data='/app/clean_data/fulldata.csv'):
 
     # creating dummies for city variable
     df_final = pd.get_dummies(df_final)
+    print(df_final.head())
 
     features = df_final.drop(['target'], axis=1)
     target = df_final['target']
 
     return features, target
 
-
+# Train and evaluate the model
 def train_evaluate_model(models_dict, model_name, task_instance):
     # Combining json files to prepare the data
     X, y = prepare_data('/app/clean_data/fulldata.csv')
@@ -224,6 +231,23 @@ def train_evaluate_model(models_dict, model_name, task_instance):
     )
 
 
+# Task 05: choose the best model
+# Retrain the best model and save it
+def train_and_save_model(best_model):
+    # Get the features
+    X, y = prepare_data('/app/clean_data/fulldata.csv')
+
+    # Training the model
+    model = models_dict[best_model]
+    model.fit(X, y)
+
+    # Saving model
+    path_to_model = Variable.get(key="model_path")
+    print(str(best_model), 'saved at ', path_to_model)
+    dump(model, path_to_model)
+
+
+# Compare the scores of the trained model
 @task(task_id="Choosing_Model")
 def choose_model(models_dict, task_instance):
     lr_score = task_instance.xcom_pull(
@@ -251,10 +275,10 @@ def choose_model(models_dict, task_instance):
     # Selection of best model with the highest neg_mse (closest to 0)
     best_model = max(neg_mse_scores, key=neg_mse_scores.get)
     print(f"The best model is {best_model} with a score of {neg_mse_scores[best_model]}")
-    train_and_save_model(
-                models_dict[best_model],
-                '/app/clean_data/best_model.pickle'
-            )
+
+    # Retrain and save the best model
+    train_and_save_model(best_model)
+
 
 
 # Define the DAG using the traditional method

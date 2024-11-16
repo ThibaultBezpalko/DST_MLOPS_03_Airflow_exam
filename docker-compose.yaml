@@ -70,6 +70,9 @@ x-airflow-common: &airflow-common
     - type: bind
       source: ./raw_files
       target: /app/raw_files
+    - type: bind
+      source: ./model
+      target: /app/model    
   user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-50000}"
   depends_on:
     redis:
