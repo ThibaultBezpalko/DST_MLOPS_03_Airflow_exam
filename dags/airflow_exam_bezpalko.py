@@ -37,8 +37,7 @@ API_key = 'dd48455b8b6454dfa07d39a4f69de373'
 
 # List of cities to collect the data
 cities = ['paris', 'london', 'washington']
-Variable.set(key="cities", value=cities)
-my_variable_value = Variable.get(key="cities")
+Variable.set(key="cities", value=json.dumps(cities))
 
 # Number of files for dashboard dataset
 dashboard_files_number = 20
@@ -69,7 +68,12 @@ def owm_request_get():
 
     data = []
 
-    for city in cities:
+    # Loading list of cities from Airflow variable
+    airflow_cities_list = Variable.get(key="cities", deserialize_json=True)
+    # airflow_cities_list = json.loads(airflow_cities)
+    print(f"List of cities to get measures: {airflow_cities_list}")
+
+    for city in airflow_cities_list:
         dt_i = datetime.datetime.now()
         print(f'Call to https://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_key} at {dt_i}')
         r = requests.get(
@@ -77,7 +81,8 @@ def owm_request_get():
             params={"q": city, "appid": API_key}
         )
         if r.status_code == 200:
-            data.append(r.json())  # Append each JSON response to the list
+            # Append each JSON response to the data object
+            data.append(r.json())  
         else:
             print(f"Error with status code: {r.status_code}")
        
@@ -86,9 +91,12 @@ def owm_request_get():
         print(f"Call time : {dt_f - dt_i} s")
 
     # Write the combined JSON array to a file
-    with open(f'/app/raw_files/{filename}', 'w') as file:
-        json.dump(data, file, indent=4)  # Writes the list as a JSON array
-        print(f"Data successfully written to {filename}") 
+    if data != []:
+        with open(f'/app/raw_files/{filename}', 'a') as file:
+            json.dump(data, file, indent=4)  # Writes the list as a JSON array
+            print(f"Data successfully written to {filename}!") 
+    else:
+        print("No data to create a file!")
 
 
 @task(task_id="Check_Number_JSON")
@@ -138,6 +146,7 @@ def compute_model_score(model, X, y):
         scoring='neg_mean_squared_error')
 
     model_score = cross_validation.mean()
+
 
     return model_score
 
@@ -203,9 +212,12 @@ def train_evaluate_model(models_dict, model_name, task_instance):
     # Cross-validation of the model
     score = compute_model_score(models_dict[model_name], X, y)
     neg_mean_squared_error = score.mean()
+    print(f"{model_name} Score: {neg_mean_squared_error}")
 
+
+    # Create an Airflow Xcom value to be used in model selection
     task_instance.xcom_push(
-        key="my_xcom_value",
+        key=f"{model_name} Score",
         value={
             model_name: neg_mean_squared_error
         }
@@ -215,15 +227,15 @@ def train_evaluate_model(models_dict, model_name, task_instance):
 @task(task_id="Choosing_Model")
 def choose_model(models_dict, task_instance):
     lr_score = task_instance.xcom_pull(
-        key="my_xcom_value",
+        key="Linear Regression Score",
         task_ids='Evaluate_Models.Linear_Regression'
     )
     dtr_score = task_instance.xcom_pull(
-        key="my_xcom_value",
+        key="Decision Tree Regression Score",
         task_ids='Evaluate_Models.Decision_Tree_Regression'
     )
     rfr_score = task_instance.xcom_pull(
-        key="my_xcom_value",
+        key="Random Forest Regression Score",
         task_ids='Evaluate_Models.Random_Forest_Regression'
     )
     
@@ -257,7 +269,7 @@ with DAG(
     - minutely API call to the OpenWeatherMap to get temperature and pressure variables for Paris, London, Washington
     - prepare the datasets for dashboard feeding and for model training
     - train 3 models
-    - choose and save the best model
+    - choose and save the best model 
     ''',
     schedule_interval=datetime.timedelta(seconds=60),
     start_date=days_ago(0),
